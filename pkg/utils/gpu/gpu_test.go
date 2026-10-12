@@ -91,7 +91,10 @@ func TestIsGPUResource(t *testing.T) {
 	}{
 		{name: "known GPU", resourceName: gpu.ResourceNvidiaGPU, want: true},
 		{name: "MIG GPU", resourceName: "nvidia.com/mig-2g.24gb", want: true},
+		{name: "time-sliced MIG GPU", resourceName: "nvidia.com/mig-2g.24gb.shared", want: true},
 		{name: "time-sliced GPU", resourceName: "nvidia.com/gpu.shared", want: true},
+		{name: "NVIDIA networking resource", resourceName: "nvidia.com/hostdev", want: false},
+		{name: "other NVIDIA resource", resourceName: "nvidia.com/example", want: false},
 		{name: "unrelated resource", resourceName: "example.com/fpga", want: false},
 	}
 	for _, tc := range testCases {
@@ -99,6 +102,18 @@ func TestIsGPUResource(t *testing.T) {
 			assert.Equal(t, tc.want, gpu.IsGPUResource(tc.resourceName))
 		})
 	}
+}
+
+func TestNodeHasGpuAllocatableDoesNotCountMigOrTimeSlicedResources(t *testing.T) {
+	node := test.BuildTestNode("node-with-mig-and-shared-gpu", 1000, 1000)
+	node.Status.Allocatable["nvidia.com/mig-2g.24gb"] = *resource.NewQuantity(32, resource.DecimalSI)
+	node.Status.Allocatable["nvidia.com/gpu.shared"] = *resource.NewQuantity(8, resource.DecimalSI)
+
+	value, found := gpu.NodeHasGpuAllocatable(node)
+
+	assert.False(t, found)
+	assert.Equal(t, int64(0), value)
+	assert.True(t, gpu.NodeHasGpuResourceAllocatable(node))
 }
 
 func TestPodRequestsGpu(t *testing.T) {
@@ -322,6 +337,14 @@ func TestDetectNodeGPUResourceName(t *testing.T) {
 				"nvidia.com/gpu.shared": *resource.NewQuantity(4, resource.DecimalSI),
 			}}},
 			expectedResourceName: gpu.ResourceNvidiaGPU,
+		},
+		{
+			name: "MIG resource selection is deterministic",
+			node: &apiv1.Node{Status: apiv1.NodeStatus{Allocatable: apiv1.ResourceList{
+				"nvidia.com/mig-4g.48gb": *resource.NewQuantity(1, resource.DecimalSI),
+				"nvidia.com/mig-2g.24gb": *resource.NewQuantity(2, resource.DecimalSI),
+			}}},
+			expectedResourceName: "nvidia.com/mig-2g.24gb",
 		},
 		{
 			name: "test default gpu resource name",

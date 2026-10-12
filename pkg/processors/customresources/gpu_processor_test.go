@@ -26,7 +26,6 @@ import (
 	apiv1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"sigs.k8s.io/cluster-autoscaler/pkg/cloudprovider"
 	testprovider "sigs.k8s.io/cluster-autoscaler/pkg/cloudprovider/test"
 	ca_context "sigs.k8s.io/cluster-autoscaler/pkg/context"
 	"sigs.k8s.io/cluster-autoscaler/pkg/simulator/framework"
@@ -227,45 +226,17 @@ func TestFilterOutNodesWithUnreadyResources(t *testing.T) {
 	}
 }
 
-func TestGetNodeGpuTargetForStaticMigNode(t *testing.T) {
+func TestGetNodeGpuTargetDoesNotCountMigDevicesAsPhysicalGpus(t *testing.T) {
 	node := &apiv1.Node{
-		ObjectMeta: metav1.ObjectMeta{Name: "static-mig-node", Labels: map[string]string{GPULabel: "nvidia-h100"}},
+		ObjectMeta: metav1.ObjectMeta{Name: "mig-node", Labels: map[string]string{GPULabel: "nvidia-h100"}},
 		Status: apiv1.NodeStatus{Allocatable: apiv1.ResourceList{
-			"nvidia.com/mig-2g.24gb": *resource.NewQuantity(2, resource.DecimalSI),
+			"nvidia.com/mig-2g.24gb": *resource.NewQuantity(32, resource.DecimalSI),
 		}},
 	}
 	provider := testprovider.NewTestCloudProviderBuilder().Build()
-	autoscalingCtx := &ca_context.AutoscalingContext{CloudProvider: provider}
-
-	target, err := (&GpuCustomResourcesProcessor{}).GetNodeGpuTarget(context.Background(), autoscalingCtx, node, nil)
-
-	assert.NoError(t, err)
-	assert.Equal(t, CustomResourceTarget{ResourceType: "nvidia-h100", ResourceCount: 2}, target)
-}
-
-func TestGetNodeGpuTargetForStaticNodeWithoutGpuCapacity(t *testing.T) {
-	node := &apiv1.Node{ObjectMeta: metav1.ObjectMeta{
-		Name: "static-unready-gpu-node", Labels: map[string]string{GPULabel: "nvidia-h100"},
-	}}
-	provider := testprovider.NewTestCloudProviderBuilder().Build()
-	autoscalingCtx := &ca_context.AutoscalingContext{CloudProvider: provider}
-
-	_, err := (&GpuCustomResourcesProcessor{}).GetNodeGpuTarget(context.Background(), autoscalingCtx, node, nil)
-
-	assert.Error(t, err)
-}
-
-func TestGetNodeGpuTargetUsesCloudProviderResourceInTemplate(t *testing.T) {
-	provider := testprovider.NewTestCloudProviderBuilder().
-		WithNodeGpuConfig(func(node *apiv1.Node) *cloudprovider.GpuConfig {
-			return &cloudprovider.GpuConfig{ExtendedResourceName: "example.com/custom-gpu"}
-		}).
-		Build()
-	node := test.BuildTestNode("node-with-gpu-label", 1000, 1000)
-	node.Labels[GPULabel] = "custom-gpu"
-	templateNode := test.BuildTestNode("template-with-custom-gpu", 1000, 1000)
-	templateNode.Status.Capacity["example.com/custom-gpu"] = *resource.NewQuantity(3, resource.DecimalSI)
-	nodeGroup := provider.BuildNodeGroup("custom-gpu-group", 1, 10, 1, true, false, "machine", nil)
+	templateNode := test.BuildTestNode("template-with-gpu", 1000, 1000)
+	templateNode.Status.Capacity[gpu.ResourceNvidiaGPU] = *resource.NewQuantity(4, resource.DecimalSI)
+	nodeGroup := provider.BuildNodeGroup("mig-group", 1, 10, 1, true, false, "machine", nil)
 	provider.SetMachineTemplates(map[string]*framework.NodeInfo{
 		nodeGroup.Id(): framework.NewNodeInfo(templateNode, nil),
 	})
@@ -274,5 +245,40 @@ func TestGetNodeGpuTargetUsesCloudProviderResourceInTemplate(t *testing.T) {
 	target, err := (&GpuCustomResourcesProcessor{}).GetNodeGpuTarget(context.Background(), autoscalingCtx, node, nodeGroup)
 
 	assert.NoError(t, err)
-	assert.Equal(t, CustomResourceTarget{ResourceType: "custom-gpu", ResourceCount: 3}, target)
+	assert.Equal(t, CustomResourceTarget{ResourceType: "nvidia-h100", ResourceCount: 4}, target)
+}
+
+func TestGetNodeGpuTargetForUnmanagedMigNodeDoesNotCountMigDevices(t *testing.T) {
+	node := &apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{Name: "unmanaged-mig-node", Labels: map[string]string{GPULabel: "nvidia-h100"}},
+		Status: apiv1.NodeStatus{Allocatable: apiv1.ResourceList{
+			"nvidia.com/mig-2g.24gb": *resource.NewQuantity(32, resource.DecimalSI),
+		}},
+	}
+	provider := testprovider.NewTestCloudProviderBuilder().Build()
+	autoscalingCtx := &ca_context.AutoscalingContext{CloudProvider: provider}
+
+	target, err := (&GpuCustomResourcesProcessor{}).GetNodeGpuTarget(context.Background(), autoscalingCtx, node, nil)
+
+	assert.NoError(t, err)
+	assert.Equal(t, CustomResourceTarget{}, target)
+}
+
+func TestGetNodeGpuTargetForUnmanagedNodeWithoutGpuAllocatable(t *testing.T) {
+	processor := GpuCustomResourcesProcessor{}
+	provider := testprovider.NewTestCloudProviderBuilder().Build()
+	autoscalingCtx := &ca_context.AutoscalingContext{CloudProvider: provider}
+	node := &apiv1.Node{
+		ObjectMeta: metav1.ObjectMeta{
+			Name: "unmanaged-gpu-node",
+			Labels: map[string]string{
+				GPULabel: "nvidia-tesla-k80",
+			},
+		},
+	}
+
+	target, err := processor.GetNodeGpuTarget(context.Background(), autoscalingCtx, node, nil)
+
+	assert.NoError(t, err)
+	assert.Equal(t, CustomResourceTarget{}, target)
 }

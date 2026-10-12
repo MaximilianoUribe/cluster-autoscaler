@@ -52,7 +52,7 @@ func (p *GpuCustomResourcesProcessor) FilterOutNodesWithUnreadyResources(ctx con
 		}
 
 		_, hasGpuLabel := node.Labels[autoscalingCtx.CloudProvider.GPULabel(ctx)]
-		_, hasAnyGpuAllocatable := gpu.NodeHasGpuAllocatable(node)
+		hasAnyGpuAllocatable := gpu.NodeHasGpuResourceAllocatable(node)
 		if hasGpuLabel && !hasAnyGpuAllocatable {
 			logger.V(3).Info("Overriding status of node that seems to have unready GPU", "node", klog.KObj(node))
 			nodesWithUnreadyGpu[node.Name] = kubernetes.GetUnreadyNodeCopy(node, kubernetes.ResourceUnready)
@@ -108,8 +108,10 @@ func (p *GpuCustomResourcesProcessor) GetNodeGpuTarget(ctx context.Context, auto
 		// But those are not yet visible in node's resource (e.g. gpu drivers are still being installed).
 		// In case of node coming from autoscaled node group we would look and node group template here.
 		// But for nodes coming from non-autoscaled groups we have no such possibility.
-		// Let's hope it is a transient error. As long as it exists we will not scale nodes groups with gpus.
-		return CustomResourceTarget{}, errors.NewAutoscalerError(errors.InternalError, "node without with gpu label, without capacity not belonging to autoscaled node group")
+		// Let's not fail here to not block cluster-wide scale ups, return empty resource target, it can possibly lead to GPU overprovisioning,
+		// while faulty GPU nodes exist, but it seems better than failing scaling at all.
+		klog.Warningf("Unable to determine expected GPU capacity for unmanaged node %q; excluding it from GPU quota usage", node.Name)
+		return CustomResourceTarget{}, nil
 	}
 
 	template, err := nodeGroup.TemplateNodeInfo(ctx)
@@ -117,19 +119,8 @@ func (p *GpuCustomResourcesProcessor) GetNodeGpuTarget(ctx context.Context, auto
 		logger.Error(err, "Failed to build template for getting GPU estimation for node", "node", klog.KObj(node))
 		return CustomResourceTarget{}, errors.ToAutoscalerError(errors.CloudProviderError, err)
 	}
-	gpuConfig := autoscalingCtx.CloudProvider.GetNodeGpuConfig(ctx, node)
-	if gpuConfig != nil && gpuConfig.ExtendedResourceName != "" {
-		if gpuCapacity, found := template.Node().Status.Capacity[gpuConfig.ExtendedResourceName]; found {
-			return CustomResourceTarget{gpuLabel, gpuCapacity.Value()}, nil
-		}
-	}
 	for _, gpuVendorResourceName := range gpu.GPUVendorResourceNames {
 		if gpuCapacity, found := template.Node().Status.Capacity[gpuVendorResourceName]; found {
-			return CustomResourceTarget{gpuLabel, gpuCapacity.Value()}, nil
-		}
-	}
-	for resourceName, gpuCapacity := range template.Node().Status.Capacity {
-		if gpu.IsGPUResource(resourceName) {
 			return CustomResourceTarget{gpuLabel, gpuCapacity.Value()}, nil
 		}
 	}
