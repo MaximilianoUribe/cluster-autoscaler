@@ -1184,6 +1184,7 @@ func (a *StaticAutoscaler) removeOldUnregisteredNodes(ctx context.Context, allUn
 		}
 		csr.InvalidateNodeInstancesCacheEntry(ctx, nodeGroup)
 		if err != nil {
+			metrics.RegisterNodesDeleted(len(nodesToDelete), metrics.NodeDeletionReasonOldUnregistered, metrics.NodeDeletionFailed)
 			logger.Info("Failed to remove unregistered nodes from node group", "nodesToDeleteCount", len(nodesToDelete), "nodeGroupId", nodeGroupId, "err", err)
 			for _, node := range nodesToDelete {
 				logRecorder.Eventf(apiv1.EventTypeWarning, "DeleteUnregisteredFailed",
@@ -1195,6 +1196,7 @@ func (a *StaticAutoscaler) removeOldUnregisteredNodes(ctx context.Context, allUn
 			logRecorder.Eventf(apiv1.EventTypeNormal, "DeleteUnregistered",
 				"Removed unregistered node %v", node.Name)
 		}
+		metrics.RegisterNodesDeleted(len(nodesToDelete), metrics.NodeDeletionReasonOldUnregistered, metrics.NodeDeletionSucceeded)
 		metrics.RegisterOldUnregisteredNodesRemoved(len(nodesToDelete))
 		removedAny = true
 	}
@@ -1267,9 +1269,11 @@ func (a *StaticAutoscaler) deleteCreatedNodesWithErrors(ctx context.Context) {
 
 		if err != nil {
 			logger.Info("Error while trying to delete nodes", "nodeGroupId", nodeGroupId, "err", err)
+			metrics.RegisterNodesDeleted(len(nodesToDelete), metrics.NodeDeletionReasonCreateErrors, metrics.NodeDeletionFailed)
 		} else if len(nodesToDelete) > 0 {
 			deletedAny = true
 			a.clusterStateRegistry.InvalidateNodeInstancesCacheEntry(ctx, nodeGroup)
+			metrics.RegisterNodesDeleted(len(nodesToDelete), metrics.NodeDeletionReasonCreateErrors, metrics.NodeDeletionSucceeded)
 		}
 	}
 
